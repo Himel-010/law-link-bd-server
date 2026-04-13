@@ -10,7 +10,13 @@ import {
   deleteUser,
 } from "../controllers/user.controller.js";
 
+import { protect, adminOnly } from "../middleware/auth.js";
+
 const router = express.Router();
+
+// =========================
+// PUBLIC ROUTES
+// =========================
 
 // REGISTER
 router.post("/register/client", registerClient);
@@ -20,9 +26,17 @@ router.post("/register/admin", registerAdmin);
 // LOGIN
 router.post("/login", loginUser);
 
-// ADMIN CRUD
-router.get("/", getAllUsers);
-router.put("/:id", updateUser);
-router.delete("/:id", deleteUser);
+// =========================
+// ADMIN PROTECTED ROUTES
+// =========================
+
+// Get all users
+router.get("/", protect, adminOnly, getAllUsers);
+
+// Update user
+router.put("/:id", protect, adminOnly, updateUser);
+
+// Delete user
+router.delete("/:id", protect, adminOnly, deleteUser);
 
 export default router;
