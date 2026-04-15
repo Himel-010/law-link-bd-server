@@ -2,166 +2,235 @@ import Subscription from "../models/subscription.model.js";
 import User from "../models/user.model.js";
 
 /**
- * Helper: add days to a date
+ * =========================
+ * HELPERS
+ * =========================
  */
+
 const addDays = (date, days) => {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
   return result;
 };
 
-/**
- * Helper: role-wise plan config
- * You can later move this into DB (Plan model) if needed
- */
-const getPlanDetails = (role, planName) => {
-  const plans = {
-    client: {
-      free: {
-        price: 0,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 2,
-          proposalLimit: 0,
-          shortlistLimit: 2,
-          priorityAccess: false,
-          profileBoost: false,
-          unlimitedChat: false,
-        },
-      },
-      basic: {
-        price: 499,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 10,
-          proposalLimit: 0,
-          shortlistLimit: 10,
-          priorityAccess: false,
-          profileBoost: false,
-          unlimitedChat: true,
-        },
-      },
-      premium: {
-        price: 999,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 9999,
-          proposalLimit: 0,
-          shortlistLimit: 9999,
-          priorityAccess: true,
-          profileBoost: false,
-          unlimitedChat: true,
-        },
+const PLAN_CONFIG = {
+  client: {
+    free: {
+      price: 0,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 2,
+        proposalLimit: 0,
+        shortlistLimit: 2,
+        proposalCredits: 0,
+        priorityAccess: false,
+        profileBoost: false,
+        unlimitedChat: false,
+        paidConsultationEnabled: false,
+        shortlistUnlockEnabled: false,
       },
     },
-
-    lawyer: {
-      free: {
-        price: 0,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 0,
-          proposalLimit: 5,
-          shortlistLimit: 0,
-          priorityAccess: false,
-          profileBoost: false,
-          unlimitedChat: false,
-        },
-      },
-      basic: {
-        price: 999,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 0,
-          proposalLimit: 30,
-          shortlistLimit: 0,
-          priorityAccess: false,
-          profileBoost: true,
-          unlimitedChat: true,
-        },
-      },
-      premium: {
-        price: 1999,
-        durationInDays: 30,
-        features: {
-          casePostLimit: 0,
-          proposalLimit: 9999,
-          shortlistLimit: 0,
-          priorityAccess: true,
-          profileBoost: true,
-          unlimitedChat: true,
-        },
+    basic: {
+      price: 499,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 10,
+        proposalLimit: 0,
+        shortlistLimit: 10,
+        proposalCredits: 0,
+        priorityAccess: false,
+        profileBoost: false,
+        unlimitedChat: true,
+        paidConsultationEnabled: true,
+        shortlistUnlockEnabled: true,
       },
     },
-  };
+    premium: {
+      price: 999,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 9999,
+        proposalLimit: 0,
+        shortlistLimit: 9999,
+        proposalCredits: 0,
+        priorityAccess: true,
+        profileBoost: false,
+        unlimitedChat: true,
+        paidConsultationEnabled: true,
+        shortlistUnlockEnabled: true,
+      },
+    },
+  },
 
-  if (!plans[role] || !plans[role][planName]) {
-    return null;
-  }
-
-  return plans[role][planName];
+  lawyer: {
+    free: {
+      price: 0,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 0,
+        proposalLimit: 5,
+        shortlistLimit: 0,
+        proposalCredits: 0,
+        priorityAccess: false,
+        profileBoost: false,
+        unlimitedChat: false,
+        paidConsultationEnabled: false,
+        shortlistUnlockEnabled: false,
+      },
+    },
+    basic: {
+      price: 999,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 0,
+        proposalLimit: 30,
+        shortlistLimit: 0,
+        proposalCredits: 10,
+        priorityAccess: false,
+        profileBoost: true,
+        unlimitedChat: true,
+        paidConsultationEnabled: true,
+        shortlistUnlockEnabled: false,
+      },
+    },
+    premium: {
+      price: 1999,
+      durationInDays: 30,
+      features: {
+        casePostLimit: 0,
+        proposalLimit: 9999,
+        shortlistLimit: 0,
+        proposalCredits: 50,
+        priorityAccess: true,
+        profileBoost: true,
+        unlimitedChat: true,
+        paidConsultationEnabled: true,
+        shortlistUnlockEnabled: false,
+      },
+    },
+  },
 };
 
-/**
- * Helper: sync user current subscription info
- */
-const syncUserSubscriptionStatus = async (userId) => {
-  const latestActiveSubscription = await Subscription.findOne({
+const ALLOWED_PAYMENT_METHODS = ["bkash", "nogod"];
+
+const getPlanDetails = (roleType, planName) => {
+  const normalizedRole = String(roleType || "").toLowerCase();
+  const normalizedPlan = String(planName || "").toLowerCase();
+
+  if (!PLAN_CONFIG[normalizedRole]) return null;
+  if (!PLAN_CONFIG[normalizedRole][normalizedPlan]) return null;
+
+  return PLAN_CONFIG[normalizedRole][normalizedPlan];
+};
+
+const getDefaultUsage = () => ({
+  casePostsUsed: 0,
+  proposalsUsed: 0,
+  shortlistsUsed: 0,
+  creditsUsed: 0,
+});
+
+const getActiveSubscription = async (userId) => {
+  return Subscription.findOne({
     user: userId,
     status: "active",
     endDate: { $gt: new Date() },
   }).sort({ endDate: -1 });
+};
 
-  if (latestActiveSubscription) {
+const syncUserSubscriptionStatus = async (userId) => {
+  const activeSub = await getActiveSubscription(userId);
+
+  if (activeSub) {
     await User.findByIdAndUpdate(userId, {
-      currentSubscription: latestActiveSubscription._id,
+      currentSubscription: activeSub._id,
       subscriptionStatus: "active",
     });
-  } else {
-    const latestSubscription = await Subscription.findOne({
-      user: userId,
-    }).sort({ createdAt: -1 });
-
-    await User.findByIdAndUpdate(userId, {
-      currentSubscription: null,
-      subscriptionStatus: latestSubscription?.status || "none",
-    });
+    return;
   }
+
+  const latestSub = await Subscription.findOne({ user: userId }).sort({
+    createdAt: -1,
+  });
+
+  await User.findByIdAndUpdate(userId, {
+    currentSubscription: null,
+    subscriptionStatus: latestSub?.status || "none",
+  });
+};
+
+const isAdmin = (req) => req.user?.role === "admin";
+
+const ensureOwnerOrAdmin = (req, ownerId) => {
+  return isAdmin(req) || String(req.user?.id) === String(ownerId);
+};
+
+const normalizePaymentMethod = (method) => {
+  if (method === null || method === undefined || method === "") return null;
+  return String(method).toLowerCase().trim();
+};
+
+const validatePaymentMethod = (method, price) => {
+  const normalizedMethod = normalizePaymentMethod(method);
+
+  if (price === 0) return { valid: true, method: null };
+
+  if (!normalizedMethod) {
+    return {
+      valid: false,
+      message: "paymentMethod is required for paid subscription",
+    };
+  }
+
+  if (!ALLOWED_PAYMENT_METHODS.includes(normalizedMethod)) {
+    return {
+      valid: false,
+      message: "paymentMethod must be either bkash or nogod",
+    };
+  }
+
+  return { valid: true, method: normalizedMethod };
 };
 
 /**
  * =========================
- * USER FUNCTIONS
+ * USER CONTROLLERS
  * =========================
  */
 
-/**
- * Create subscription
- * req.user.id assumed from auth middleware
- * req.user.role assumed from auth middleware
- */
 export const createSubscription = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const { planName, transactionId } = req.body;
+    const userId = req.user?.id;
+    const roleType = req.user?.role;
+    const {
+      planName,
+      transactionId = null,
+      paymentMethod = null,
+      notes = null,
+    } = req.body;
 
-    if (!["client", "lawyer"].includes(userRole)) {
+    if (!userId || !roleType) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    if (!["client", "lawyer"].includes(roleType)) {
       return res.status(400).json({
         success: false,
-        message: "Only client or lawyer can subscribe",
+        message: "Only client or lawyer can create subscription",
       });
     }
 
     if (!planName) {
       return res.status(400).json({
         success: false,
-        message: "Plan name is required",
+        message: "planName is required",
       });
     }
 
     const user = await User.findById(userId);
-
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -169,56 +238,62 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    const normalizedPlanName = planName.toLowerCase();
-    const plan = getPlanDetails(userRole, normalizedPlanName);
-
+    const plan = getPlanDetails(roleType, planName);
     if (!plan) {
       return res.status(400).json({
         success: false,
-        message: "Invalid subscription plan",
+        message: "Invalid plan for this role",
       });
     }
 
-    const existingActiveSubscription = await Subscription.findOne({
-      user: userId,
-      status: "active",
-      endDate: { $gt: new Date() },
-    });
-
-    if (existingActiveSubscription) {
+    const paymentValidation = validatePaymentMethod(paymentMethod, plan.price);
+    if (!paymentValidation.valid) {
       return res.status(400).json({
         success: false,
-        message: "User already has an active subscription",
+        message: paymentValidation.message,
       });
     }
 
-    const startDate = new Date();
-    const endDate = addDays(startDate, plan.durationInDays);
+    const existingActive = await getActiveSubscription(userId);
+    if (existingActive) {
+      return res.status(400).json({
+        success: false,
+        message: "You already have an active subscription",
+      });
+    }
+
+    const now = new Date();
+    const endDate = addDays(now, plan.durationInDays);
+    const isFreePlan = plan.price === 0;
 
     const subscription = await Subscription.create({
       user: userId,
-      roleType: userRole,
-      planName: normalizedPlanName,
+      roleType,
+      planName: planName.toLowerCase(),
       price: plan.price,
       durationInDays: plan.durationInDays,
-      startDate,
+      startDate: now,
       endDate,
-      status: plan.price === 0 ? "active" : "pending",
+      status: isFreePlan ? "active" : "pending",
       features: plan.features,
-      paymentStatus: plan.price === 0 ? "paid" : "unpaid",
-      transactionId: transactionId || null,
+      usage: getDefaultUsage(),
+      payment: {
+        status: isFreePlan ? "paid" : "unpaid",
+        transactionId,
+        method: paymentValidation.method,
+        paidAt: isFreePlan ? now : null,
+      },
+      activatedAt: isFreePlan ? now : null,
+      notes,
     });
 
-    user.currentSubscription = subscription.status === "active" ? subscription._id : null;
-    user.subscriptionStatus = subscription.status;
-    await user.save();
+    await syncUserSubscriptionStatus(userId);
 
     return res.status(201).json({
       success: true,
-      message:
-        plan.price === 0
-          ? "Free subscription activated successfully"
-          : "Subscription created successfully. Waiting for payment confirmation",
+      message: isFreePlan
+        ? "Free subscription activated successfully"
+        : "Subscription created successfully. Waiting for payment confirmation",
       data: subscription,
     });
   } catch (error) {
@@ -231,81 +306,13 @@ export const createSubscription = async (req, res) => {
   }
 };
 
-/**
- * Confirm payment and activate subscription
- * Only admin should call this
- */
-export const activateSubscription = async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Only admin can activate subscription",
-      });
-    }
-
-    const { subscriptionId, transactionId } = req.body;
-
-    if (!subscriptionId) {
-      return res.status(400).json({
-        success: false,
-        message: "Subscription ID is required",
-      });
-    }
-
-    const subscription = await Subscription.findById(subscriptionId);
-
-    if (!subscription) {
-      return res.status(404).json({
-        success: false,
-        message: "Subscription not found",
-      });
-    }
-
-    subscription.status = "active";
-    subscription.paymentStatus = "paid";
-    if (transactionId) subscription.transactionId = transactionId;
-
-    if (!subscription.startDate) {
-      subscription.startDate = new Date();
-    }
-
-    if (!subscription.endDate) {
-      subscription.endDate = addDays(subscription.startDate, subscription.durationInDays || 30);
-    }
-
-    await subscription.save();
-
-    await User.findByIdAndUpdate(subscription.user, {
-      subscriptionStatus: "active",
-      currentSubscription: subscription._id,
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Subscription activated successfully",
-      data: subscription,
-    });
-  } catch (error) {
-    console.error("activateSubscription error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to activate subscription",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * Get my current/latest subscription
- */
 export const getMySubscription = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
 
-    const subscription = await Subscription.findOne({
-      user: userId,
-    }).sort({ createdAt: -1 });
+    const subscription = await Subscription.findOne({ user: userId }).sort({
+      createdAt: -1,
+    });
 
     if (!subscription) {
       return res.status(404).json({
@@ -328,16 +335,40 @@ export const getMySubscription = async (req, res) => {
   }
 };
 
-/**
- * Get subscription history of logged in user
- */
+export const getMyActiveSubscription = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+
+    const subscription = await getActiveSubscription(userId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: "No active subscription found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: subscription,
+    });
+  } catch (error) {
+    console.error("getMyActiveSubscription error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch active subscription",
+      error: error.message,
+    });
+  }
+};
+
 export const getMySubscriptionHistory = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
 
-    const subscriptions = await Subscription.find({
-      user: userId,
-    }).sort({ createdAt: -1 });
+    const subscriptions = await Subscription.find({ user: userId }).sort({
+      createdAt: -1,
+    });
 
     return res.status(200).json({
       success: true,
@@ -354,18 +385,20 @@ export const getMySubscriptionHistory = async (req, res) => {
   }
 };
 
-/**
- * Renew subscription
- */
 export const renewSubscription = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const { subscriptionId, transactionId } = req.body;
+    const userId = req.user?.id;
+    const {
+      subscriptionId,
+      transactionId = null,
+      paymentMethod = null,
+      notes = null,
+    } = req.body;
 
     if (!subscriptionId) {
       return res.status(400).json({
         success: false,
-        message: "Subscription ID is required",
+        message: "subscriptionId is required",
       });
     }
 
@@ -378,28 +411,35 @@ export const renewSubscription = async (req, res) => {
       });
     }
 
-    if (oldSubscription.user.toString() !== userId) {
+    if (!ensureOwnerOrAdmin(req, oldSubscription.user)) {
       return res.status(403).json({
         success: false,
         message: "Unauthorized access",
       });
     }
 
-    const activeSubscription = await Subscription.findOne({
-      user: userId,
-      status: "active",
-      endDate: { $gt: new Date() },
-    });
-
-    if (activeSubscription) {
+    const paymentValidation = validatePaymentMethod(
+      paymentMethod,
+      oldSubscription.price
+    );
+    if (!paymentValidation.valid) {
       return res.status(400).json({
         success: false,
-        message: "You already have an active subscription",
+        message: paymentValidation.message,
       });
     }
 
-    const startDate = new Date();
-    const endDate = addDays(startDate, oldSubscription.durationInDays);
+    const existingActive = await getActiveSubscription(oldSubscription.user);
+    if (existingActive) {
+      return res.status(400).json({
+        success: false,
+        message: "User already has an active subscription",
+      });
+    }
+
+    const now = new Date();
+    const endDate = addDays(now, oldSubscription.durationInDays);
+    const isFreePlan = oldSubscription.price === 0;
 
     const renewedSubscription = await Subscription.create({
       user: oldSubscription.user,
@@ -407,26 +447,29 @@ export const renewSubscription = async (req, res) => {
       planName: oldSubscription.planName,
       price: oldSubscription.price,
       durationInDays: oldSubscription.durationInDays,
-      startDate,
+      startDate: now,
       endDate,
-      status: oldSubscription.price === 0 ? "active" : "pending",
+      status: isFreePlan ? "active" : "pending",
       features: oldSubscription.features,
-      paymentStatus: oldSubscription.price === 0 ? "paid" : "unpaid",
-      transactionId: transactionId || null,
+      usage: getDefaultUsage(),
+      payment: {
+        status: isFreePlan ? "paid" : "unpaid",
+        transactionId,
+        method: paymentValidation.method,
+        paidAt: isFreePlan ? now : null,
+      },
+      activatedAt: isFreePlan ? now : null,
+      renewedFrom: oldSubscription._id,
+      notes,
     });
 
-    await User.findByIdAndUpdate(userId, {
-      currentSubscription:
-        renewedSubscription.status === "active" ? renewedSubscription._id : null,
-      subscriptionStatus: renewedSubscription.status,
-    });
+    await syncUserSubscriptionStatus(oldSubscription.user);
 
     return res.status(201).json({
       success: true,
-      message:
-        oldSubscription.price === 0
-          ? "Free subscription renewed successfully"
-          : "Subscription renewed successfully. Waiting for payment confirmation",
+      message: isFreePlan
+        ? "Free subscription renewed successfully"
+        : "Subscription renewed successfully. Waiting for payment confirmation",
       data: renewedSubscription,
     });
   } catch (error) {
@@ -439,14 +482,9 @@ export const renewSubscription = async (req, res) => {
   }
 };
 
-/**
- * Cancel subscription by user
- */
 export const cancelSubscription = async (req, res) => {
   try {
-    const userId = req.user.id;
     const { subscriptionId } = req.params;
-
     const subscription = await Subscription.findById(subscriptionId);
 
     if (!subscription) {
@@ -456,17 +494,25 @@ export const cancelSubscription = async (req, res) => {
       });
     }
 
-    if (subscription.user.toString() !== userId) {
+    if (!ensureOwnerOrAdmin(req, subscription.user)) {
       return res.status(403).json({
         success: false,
         message: "Unauthorized access",
       });
     }
 
+    if (subscription.status === "cancelled") {
+      return res.status(400).json({
+        success: false,
+        message: "Subscription already cancelled",
+      });
+    }
+
     subscription.status = "cancelled";
+    subscription.cancelledAt = new Date();
     await subscription.save();
 
-    await syncUserSubscriptionStatus(userId);
+    await syncUserSubscriptionStatus(subscription.user);
 
     return res.status(200).json({
       success: true,
@@ -483,41 +529,165 @@ export const cancelSubscription = async (req, res) => {
   }
 };
 
-/**
- * Expire outdated subscriptions
- * Run this from cron job / admin route
- */
-export const checkAndExpireSubscriptions = async (req, res) => {
+export const consumeSubscriptionFeature = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
+    const userId = req.user?.id;
+    const { featureKey, amount = 1 } = req.body;
+
+    const allowedFeatureKeys = [
+      "casePostsUsed",
+      "proposalsUsed",
+      "shortlistsUsed",
+      "creditsUsed",
+    ];
+
+    if (!allowedFeatureKeys.includes(featureKey)) {
+      return res.status(400).json({
         success: false,
-        message: "Only admin can run expire check",
+        message: "Invalid featureKey",
       });
     }
 
-    const expiredSubscriptions = await Subscription.find({
-      status: "active",
-      endDate: { $lt: new Date() },
+    const subscription = await getActiveSubscription(userId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: "No active subscription found",
+      });
+    }
+
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "amount must be a positive number",
+      });
+    }
+
+    const usageMap = {
+      casePostsUsed: "casePostLimit",
+      proposalsUsed: "proposalLimit",
+      shortlistsUsed: "shortlistLimit",
+      creditsUsed: "proposalCredits",
+    };
+
+    const limitField = usageMap[featureKey];
+    const limit = subscription.features?.[limitField] ?? 0;
+    const currentUsed = subscription.usage?.[featureKey] ?? 0;
+
+    if (limit !== 9999 && currentUsed + numericAmount > limit) {
+      return res.status(400).json({
+        success: false,
+        message: `${limitField} exceeded`,
+      });
+    }
+
+    subscription.usage[featureKey] = currentUsed + numericAmount;
+    await subscription.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Subscription usage updated successfully",
+      data: subscription,
     });
+  } catch (error) {
+    console.error("consumeSubscriptionFeature error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update usage",
+      error: error.message,
+    });
+  }
+};
 
-    for (const sub of expiredSubscriptions) {
-      sub.status = "expired";
-      await sub.save();
+export const checkSubscriptionFeatureAccess = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { feature } = req.params;
 
-      await syncUserSubscriptionStatus(sub.user);
+    const subscription = await getActiveSubscription(userId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: "No active subscription found",
+      });
+    }
+
+    let result = {
+      allowed: false,
+      feature,
+      details: null,
+    };
+
+    switch (feature) {
+      case "case-post":
+        result.allowed =
+          subscription.features.casePostLimit === 9999 ||
+          subscription.usage.casePostsUsed < subscription.features.casePostLimit;
+        result.details = {
+          limit: subscription.features.casePostLimit,
+          used: subscription.usage.casePostsUsed,
+        };
+        break;
+
+      case "proposal":
+        result.allowed =
+          subscription.features.proposalLimit === 9999 ||
+          subscription.usage.proposalsUsed < subscription.features.proposalLimit;
+        result.details = {
+          limit: subscription.features.proposalLimit,
+          used: subscription.usage.proposalsUsed,
+        };
+        break;
+
+      case "shortlist":
+        result.allowed =
+          subscription.features.shortlistLimit === 9999 ||
+          subscription.usage.shortlistsUsed < subscription.features.shortlistLimit;
+        result.details = {
+          limit: subscription.features.shortlistLimit,
+          used: subscription.usage.shortlistsUsed,
+        };
+        break;
+
+      case "priority-access":
+        result.allowed = subscription.features.priorityAccess;
+        break;
+
+      case "profile-boost":
+        result.allowed = subscription.features.profileBoost;
+        break;
+
+      case "unlimited-chat":
+        result.allowed = subscription.features.unlimitedChat;
+        break;
+
+      case "paid-consultation":
+        result.allowed = subscription.features.paidConsultationEnabled;
+        break;
+
+      case "shortlist-unlock":
+        result.allowed = subscription.features.shortlistUnlockEnabled;
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: "Invalid feature requested",
+        });
     }
 
     return res.status(200).json({
       success: true,
-      message: "Expired subscriptions updated successfully",
-      updatedCount: expiredSubscriptions.length,
+      data: result,
     });
   } catch (error) {
-    console.error("checkAndExpireSubscriptions error:", error);
+    console.error("checkSubscriptionFeatureAccess error:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to check expired subscriptions",
+      message: "Failed to check feature access",
       error: error.message,
     });
   }
@@ -525,48 +695,39 @@ export const checkAndExpireSubscriptions = async (req, res) => {
 
 /**
  * =========================
- * ADMIN CRUD FUNCTIONS
+ * ADMIN CONTROLLERS
  * =========================
  */
 
-/**
- * Admin create subscription for any user
- */
 export const adminCreateSubscription = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdmin(req)) {
       return res.status(403).json({
         success: false,
-        message: "Only admin can create subscription for users",
+        message: "Only admin can create subscription",
       });
     }
 
     const {
       userId,
-      planName,
       roleType,
-      transactionId = null,
+      planName,
+      startDate,
       status,
       paymentStatus,
-      startDate,
+      transactionId = null,
+      paymentMethod = null,
+      notes = null,
     } = req.body;
 
-    if (!userId || !planName || !roleType) {
+    if (!userId || !roleType || !planName) {
       return res.status(400).json({
         success: false,
         message: "userId, roleType and planName are required",
       });
     }
 
-    if (!["client", "lawyer"].includes(roleType)) {
-      return res.status(400).json({
-        success: false,
-        message: "roleType must be client or lawyer",
-      });
-    }
-
     const user = await User.findById(userId);
-
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -574,88 +735,170 @@ export const adminCreateSubscription = async (req, res) => {
       });
     }
 
-    const normalizedPlanName = planName.toLowerCase();
-    const plan = getPlanDetails(roleType, normalizedPlanName);
-
+    const plan = getPlanDetails(roleType, planName);
     if (!plan) {
       return res.status(400).json({
         success: false,
-        message: "Invalid subscription plan",
+        message: "Invalid plan for this role",
       });
     }
 
-    const existingActiveSubscription = await Subscription.findOne({
-      user: userId,
-      status: "active",
-      endDate: { $gt: new Date() },
-    });
+    const paymentValidation = validatePaymentMethod(paymentMethod, plan.price);
+    if (!paymentValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: paymentValidation.message,
+      });
+    }
 
-    if (existingActiveSubscription) {
+    const existingActive = await getActiveSubscription(userId);
+    if (existingActive) {
       return res.status(400).json({
         success: false,
         message: "User already has an active subscription",
       });
     }
 
-    const subscriptionStartDate = startDate ? new Date(startDate) : new Date();
-    const subscriptionEndDate = addDays(
-      subscriptionStartDate,
-      plan.durationInDays
-    );
-
-    const finalStatus =
-      status || (plan.price === 0 ? "active" : "pending");
+    const finalStartDate = startDate ? new Date(startDate) : new Date();
+    const finalEndDate = addDays(finalStartDate, plan.durationInDays);
+    const finalStatus = status || (plan.price === 0 ? "active" : "pending");
     const finalPaymentStatus =
       paymentStatus || (plan.price === 0 ? "paid" : "unpaid");
 
     const subscription = await Subscription.create({
       user: userId,
       roleType,
-      planName: normalizedPlanName,
+      planName: planName.toLowerCase(),
       price: plan.price,
       durationInDays: plan.durationInDays,
-      startDate: subscriptionStartDate,
-      endDate: subscriptionEndDate,
+      startDate: finalStartDate,
+      endDate: finalEndDate,
       status: finalStatus,
       features: plan.features,
-      paymentStatus: finalPaymentStatus,
-      transactionId,
+      usage: getDefaultUsage(),
+      payment: {
+        status: finalPaymentStatus,
+        transactionId,
+        method: paymentValidation.method,
+        paidAt: finalPaymentStatus === "paid" ? new Date() : null,
+      },
+      activatedAt: finalStatus === "active" ? new Date() : null,
+      notes,
     });
 
     await syncUserSubscriptionStatus(userId);
 
     return res.status(201).json({
       success: true,
-      message: "Subscription created by admin successfully",
+      message: "Subscription created successfully by admin",
       data: subscription,
     });
   } catch (error) {
     console.error("adminCreateSubscription error:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to create subscription by admin",
+      message: "Failed to create subscription",
       error: error.message,
     });
   }
 };
 
-/**
- * Admin get all subscriptions
- */
+export const activateSubscription = async (req, res) => {
+  try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only admin can activate subscription",
+      });
+    }
+
+    const {
+      subscriptionId,
+      transactionId = null,
+      paymentMethod = null,
+    } = req.body;
+
+    if (!subscriptionId) {
+      return res.status(400).json({
+        success: false,
+        message: "subscriptionId is required",
+      });
+    }
+
+    const subscription = await Subscription.findById(subscriptionId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: "Subscription not found",
+      });
+    }
+
+    const normalizedMethod = normalizePaymentMethod(paymentMethod);
+
+    if (normalizedMethod && !ALLOWED_PAYMENT_METHODS.includes(normalizedMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: "paymentMethod must be either bkash or nogod",
+      });
+    }
+
+    subscription.status = "active";
+    subscription.activatedAt = new Date();
+    subscription.payment.status = "paid";
+    subscription.payment.paidAt = new Date();
+
+    if (transactionId) subscription.payment.transactionId = transactionId;
+    if (normalizedMethod) subscription.payment.method = normalizedMethod;
+
+    if (!subscription.startDate) subscription.startDate = new Date();
+    if (!subscription.endDate) {
+      subscription.endDate = addDays(
+        subscription.startDate,
+        subscription.durationInDays || 30
+      );
+    }
+
+    await subscription.save();
+    await syncUserSubscriptionStatus(subscription.user);
+
+    return res.status(200).json({
+      success: true,
+      message: "Subscription activated successfully",
+      data: subscription,
+    });
+  } catch (error) {
+    console.error("activateSubscription error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to activate subscription",
+      error: error.message,
+    });
+  }
+};
+
 export const getAllSubscriptions = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdmin(req)) {
       return res.status(403).json({
         success: false,
         message: "Only admin can view all subscriptions",
       });
     }
 
-    const { status, roleType, userId, page = 1, limit = 10 } = req.query;
+    const {
+      status,
+      roleType,
+      planName,
+      userId,
+      page = 1,
+      limit = 10,
+    } = req.query;
 
     const filter = {};
     if (status) filter.status = status;
     if (roleType) filter.roleType = roleType;
+    if (planName) filter.planName = String(planName).toLowerCase();
     if (userId) filter.user = userId;
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -680,18 +923,15 @@ export const getAllSubscriptions = async (req, res) => {
     console.error("getAllSubscriptions error:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch all subscriptions",
+      message: "Failed to fetch subscriptions",
       error: error.message,
     });
   }
 };
 
-/**
- * Admin get single subscription by id
- */
 export const getSubscriptionById = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdmin(req)) {
       return res.status(403).json({
         success: false,
         message: "Only admin can view subscription details",
@@ -726,12 +966,9 @@ export const getSubscriptionById = async (req, res) => {
   }
 };
 
-/**
- * Admin update subscription
- */
 export const adminUpdateSubscription = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdmin(req)) {
       return res.status(403).json({
         success: false,
         message: "Only admin can update subscription",
@@ -743,11 +980,12 @@ export const adminUpdateSubscription = async (req, res) => {
       planName,
       roleType,
       status,
-      paymentStatus,
-      transactionId,
       startDate,
       endDate,
+      notes,
       features,
+      usage,
+      payment,
     } = req.body;
 
     const subscription = await Subscription.findById(subscriptionId);
@@ -759,46 +997,97 @@ export const adminUpdateSubscription = async (req, res) => {
       });
     }
 
-    if (planName) {
-      const finalRoleType = roleType || subscription.roleType;
-      const plan = getPlanDetails(finalRoleType, planName.toLowerCase());
+    if (planName || roleType) {
+      const finalRole = roleType || subscription.roleType;
+      const finalPlan = planName || subscription.planName;
 
+      const plan = getPlanDetails(finalRole, finalPlan);
       if (!plan) {
         return res.status(400).json({
           success: false,
-          message: "Invalid plan for selected role type",
+          message: "Invalid roleType/planName combination",
         });
       }
 
-      subscription.planName = planName.toLowerCase();
-      subscription.roleType = finalRoleType;
+      subscription.roleType = finalRole;
+      subscription.planName = finalPlan.toLowerCase();
       subscription.price = plan.price;
       subscription.durationInDays = plan.durationInDays;
       subscription.features = plan.features;
 
-      const newStartDate = startDate
+      const finalStartDate = startDate
         ? new Date(startDate)
         : subscription.startDate || new Date();
 
-      subscription.startDate = newStartDate;
+      subscription.startDate = finalStartDate;
       subscription.endDate = endDate
         ? new Date(endDate)
-        : addDays(newStartDate, plan.durationInDays);
+        : addDays(finalStartDate, plan.durationInDays);
     } else {
-      if (roleType) subscription.roleType = roleType;
       if (startDate) subscription.startDate = new Date(startDate);
       if (endDate) subscription.endDate = new Date(endDate);
+
       if (features) {
         subscription.features = {
-          ...subscription.features,
+          ...subscription.features.toObject(),
           ...features,
+        };
+      }
+
+      if (usage) {
+        subscription.usage = {
+          ...subscription.usage.toObject(),
+          ...usage,
         };
       }
     }
 
-    if (status) subscription.status = status;
-    if (paymentStatus) subscription.paymentStatus = paymentStatus;
-    if (transactionId !== undefined) subscription.transactionId = transactionId;
+    if (status) {
+      subscription.status = status;
+
+      if (status === "active" && !subscription.activatedAt) {
+        subscription.activatedAt = new Date();
+      }
+
+      if (status === "cancelled") {
+        subscription.cancelledAt = new Date();
+      }
+
+      if (status === "expired") {
+        subscription.expiredAt = new Date();
+      }
+    }
+
+    if (notes !== undefined) subscription.notes = notes;
+
+    if (payment) {
+      const updatedPayment = { ...payment };
+
+      if (updatedPayment.method !== undefined) {
+        const normalizedMethod = normalizePaymentMethod(updatedPayment.method);
+
+        if (
+          normalizedMethod !== null &&
+          !ALLOWED_PAYMENT_METHODS.includes(normalizedMethod)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message: "payment.method must be either bkash or nogod",
+          });
+        }
+
+        updatedPayment.method = normalizedMethod;
+      }
+
+      subscription.payment = {
+        ...subscription.payment.toObject(),
+        ...updatedPayment,
+      };
+
+      if (updatedPayment.status === "paid" && !subscription.payment.paidAt) {
+        subscription.payment.paidAt = new Date();
+      }
+    }
 
     await subscription.save();
     await syncUserSubscriptionStatus(subscription.user);
@@ -818,12 +1107,9 @@ export const adminUpdateSubscription = async (req, res) => {
   }
 };
 
-/**
- * Admin delete subscription permanently
- */
 export const adminDeleteSubscription = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!isAdmin(req)) {
       return res.status(403).json({
         success: false,
         message: "Only admin can delete subscription",
@@ -855,6 +1141,59 @@ export const adminDeleteSubscription = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to delete subscription",
+      error: error.message,
+    });
+  }
+};
+
+export const checkAndExpireSubscriptions = async (req, res) => {
+  try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only admin can run expire check",
+      });
+    }
+
+    const expiredSubscriptions = await Subscription.find({
+      status: "active",
+      endDate: { $lt: new Date() },
+    });
+
+    for (const sub of expiredSubscriptions) {
+      sub.status = "expired";
+      sub.expiredAt = new Date();
+      await sub.save();
+      await syncUserSubscriptionStatus(sub.user);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Expired subscriptions updated successfully",
+      updatedCount: expiredSubscriptions.length,
+    });
+  } catch (error) {
+    console.error("checkAndExpireSubscriptions error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to check expired subscriptions",
+      error: error.message,
+    });
+  }
+};
+
+export const getSubscriptionPlans = async (req, res) => {
+  try {
+    return res.status(200).json({
+      success: true,
+      paymentMethods: ALLOWED_PAYMENT_METHODS,
+      data: PLAN_CONFIG,
+    });
+  } catch (error) {
+    console.error("getSubscriptionPlans error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch plans",
       error: error.message,
     });
   }
