@@ -13,7 +13,7 @@ export const protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    // 2) যদি token না থাকে
+    // 2) No token
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -41,7 +41,7 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // 5) Optional: admin ছাড়া phone required থাকলে check করা যায়
+    // 5) Optional profile check
     if (user.role !== "admin" && !user.phone) {
       return res.status(403).json({
         success: false,
@@ -49,7 +49,7 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // 6) req.user set
+    // 6) Set req.user
     req.user = {
       id: user._id.toString(),
       name: user.name,

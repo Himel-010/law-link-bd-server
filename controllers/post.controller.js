@@ -4,6 +4,74 @@ import User from "../models/user.model.js";
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
+const parsePagination = (page = 1, limit = 10) => {
+  const safePage = Math.max(Number(page) || 1, 1);
+  const safeLimit = Math.max(Number(limit) || 10, 1);
+  const skip = (safePage - 1) * safeLimit;
+
+  return { page: safePage, limit: safeLimit, skip };
+};
+
+const buildPostFilter = (query = {}, defaultStatus = null) => {
+  const {
+    category,
+    urgency,
+    status,
+    division,
+    district,
+    minBudget,
+    maxBudget,
+    search,
+  } = query;
+
+  const filter = {};
+
+  if (defaultStatus && !status) {
+    filter.status = defaultStatus;
+  }
+
+  if (status) filter.status = status;
+  if (category) filter.category = category;
+  if (urgency) filter.urgency = urgency;
+  if (division) filter.division = division;
+  if (district) filter.district = district;
+
+  if (minBudget) {
+    filter.budgetMax = { $gte: Number(minBudget) };
+  }
+
+  if (maxBudget) {
+    filter.budgetMin = { $lte: Number(maxBudget) };
+  }
+
+  if (search) {
+    filter.$or = [
+      { title: { $regex: search, $options: "i" } },
+      { description: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  return filter;
+};
+
+const populatePostQuery = (query) => {
+  return query
+    .populate("client", "name email phone role")
+    .populate("selectedLawyer", "name email phone role")
+    .populate("bids.lawyer", "name email phone role lawRegNumber");
+};
+
+const ensurePostExists = async (id) => {
+  return Post.findById(id);
+};
+
+const ensureClientOwnerOrAdmin = (req, post) => {
+  return (
+    req.user?.role === "admin" ||
+    post.client?.toString() === req.user?.id?.toString()
+  );
+};
+
 export const createPost = async (req, res, next) => {
   try {
     const {
@@ -42,9 +110,7 @@ export const createPost = async (req, res, next) => {
       expiresAt: expiresAt || null,
     });
 
-    const result = await Post.findById(post._id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role");
+    const result = await populatePostQuery(Post.findById(post._id));
 
     return res.status(201).json({
       success: true,
@@ -58,61 +124,27 @@ export const createPost = async (req, res, next) => {
 
 export const getAllPosts = async (req, res, next) => {
   try {
-    const {
-      category,
-      urgency,
-      status = "open",
-      division,
-      district,
-      minBudget,
-      maxBudget,
-      page = 1,
-      limit = 10,
-      search,
-    } = req.query;
+    const { page, limit, skip } = parsePagination(req.query.page, req.query.limit);
+    const filter = buildPostFilter(req.query, "open");
 
-    const filter = {};
-
-    if (status) filter.status = status;
-    if (category) filter.category = category;
-    if (urgency) filter.urgency = urgency;
-    if (division) filter.division = division;
-    if (district) filter.district = district;
-
-    if (minBudget) {
-      filter.budgetMax = { $gte: Number(minBudget) };
-    }
-
-    if (maxBudget) {
-      filter.budgetMin = { $lte: Number(maxBudget) };
-    }
-
-    if (search) {
-      filter.$or = [
-        { title: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    const skip = (Number(page) - 1) * Number(limit);
-
-    const posts = await Post.find(filter)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .sort({ isPriority: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit));
-
-    const total = await Post.countDocuments(filter);
+    const [posts, total] = await Promise.all([
+      populatePostQuery(
+        Post.find(filter)
+          .sort({ isPriority: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+      ),
+      Post.countDocuments(filter),
+    ]);
 
     return res.status(200).json({
       success: true,
       message: "Posts fetched successfully",
       meta: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)),
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
       data: posts,
     });
@@ -132,10 +164,7 @@ export const getSinglePost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role lawRegNumber");
+    const post = await populatePostQuery(Post.findById(id));
 
     if (!post) {
       return res.status(404).json({
@@ -156,11 +185,9 @@ export const getSinglePost = async (req, res, next) => {
 
 export const getMyPosts = async (req, res, next) => {
   try {
-    const posts = await Post.find({ client: req.user.id })
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role")
-      .sort({ createdAt: -1 });
+    const posts = await populatePostQuery(
+      Post.find({ client: req.user.id }).sort({ createdAt: -1 })
+    );
 
     return res.status(200).json({
       success: true,
@@ -183,7 +210,7 @@ export const updatePost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -192,10 +219,7 @@ export const updatePost = async (req, res, next) => {
       });
     }
 
-    if (
-      req.user.role !== "admin" &&
-      post.client.toString() !== req.user.id.toString()
-    ) {
+    if (!ensureClientOwnerOrAdmin(req, post)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to update this post",
@@ -234,10 +258,7 @@ export const updatePost = async (req, res, next) => {
 
     await post.save();
 
-    const updatedPost = await Post.findById(post._id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role");
+    const updatedPost = await populatePostQuery(Post.findById(post._id));
 
     return res.status(200).json({
       success: true,
@@ -260,7 +281,7 @@ export const deletePost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -269,10 +290,7 @@ export const deletePost = async (req, res, next) => {
       });
     }
 
-    if (
-      req.user.role !== "admin" &&
-      post.client.toString() !== req.user.id.toString()
-    ) {
+    if (!ensureClientOwnerOrAdmin(req, post)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to delete this post",
@@ -318,7 +336,7 @@ export const placeBid = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -361,9 +379,7 @@ export const placeBid = async (req, res, next) => {
 
     await post.save();
 
-    const updatedPost = await Post.findById(post._id)
-      .populate("client", "name email phone role")
-      .populate("bids.lawyer", "name email phone role lawRegNumber");
+    const updatedPost = await populatePostQuery(Post.findById(post._id));
 
     return res.status(200).json({
       success: true,
@@ -386,7 +402,7 @@ export const withdrawBid = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -421,10 +437,12 @@ export const withdrawBid = async (req, res, next) => {
     bid.status = "withdrawn";
     await post.save();
 
+    const updatedPost = await populatePostQuery(Post.findById(post._id));
+
     return res.status(200).json({
       success: true,
       message: "Bid withdrawn successfully",
-      data: post,
+      data: updatedPost,
     });
   } catch (error) {
     next(error);
@@ -442,7 +460,7 @@ export const acceptBid = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -451,10 +469,7 @@ export const acceptBid = async (req, res, next) => {
       });
     }
 
-    if (
-      req.user.role !== "admin" &&
-      post.client.toString() !== req.user.id.toString()
-    ) {
+    if (!ensureClientOwnerOrAdmin(req, post)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to accept a bid on this post",
@@ -498,10 +513,7 @@ export const acceptBid = async (req, res, next) => {
 
     await post.save();
 
-    const updatedPost = await Post.findById(post._id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role lawRegNumber");
+    const updatedPost = await populatePostQuery(Post.findById(post._id));
 
     return res.status(200).json({
       success: true,
@@ -524,7 +536,7 @@ export const closePost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -533,10 +545,7 @@ export const closePost = async (req, res, next) => {
       });
     }
 
-    if (
-      req.user.role !== "admin" &&
-      post.client.toString() !== req.user.id.toString()
-    ) {
+    if (!ensureClientOwnerOrAdmin(req, post)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to close this post",
@@ -567,7 +576,7 @@ export const cancelPost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id);
+    const post = await ensurePostExists(id);
 
     if (!post) {
       return res.status(404).json({
@@ -576,10 +585,7 @@ export const cancelPost = async (req, res, next) => {
       });
     }
 
-    if (
-      req.user.role !== "admin" &&
-      post.client.toString() !== req.user.id.toString()
-    ) {
+    if (!ensureClientOwnerOrAdmin(req, post)) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to cancel this post",
@@ -610,65 +616,26 @@ export const cancelPost = async (req, res, next) => {
 /*                               ADMIN CONTROLLERS                            */
 /* -------------------------------------------------------------------------- */
 
-// GET /api/posts/admin/all
 export const adminGetAllPosts = async (req, res, next) => {
   try {
-    const {
-      category,
-      urgency,
-      status,
-      division,
-      district,
-      minBudget,
-      maxBudget,
-      page = 1,
-      limit = 10,
-      search,
-    } = req.query;
+    const { page, limit, skip } = parsePagination(req.query.page, req.query.limit);
+    const filter = buildPostFilter(req.query);
 
-    const filter = {};
-
-    if (status) filter.status = status;
-    if (category) filter.category = category;
-    if (urgency) filter.urgency = urgency;
-    if (division) filter.division = division;
-    if (district) filter.district = district;
-
-    if (minBudget) {
-      filter.budgetMax = { $gte: Number(minBudget) };
-    }
-
-    if (maxBudget) {
-      filter.budgetMin = { $lte: Number(maxBudget) };
-    }
-
-    if (search) {
-      filter.$or = [
-        { title: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    const skip = (Number(page) - 1) * Number(limit);
-
-    const posts = await Post.find(filter)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role lawRegNumber")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit));
-
-    const total = await Post.countDocuments(filter);
+    const [posts, total] = await Promise.all([
+      populatePostQuery(
+        Post.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
+      ),
+      Post.countDocuments(filter),
+    ]);
 
     return res.status(200).json({
       success: true,
       message: "Admin fetched all posts successfully",
       meta: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)),
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
       data: posts,
     });
@@ -677,7 +644,6 @@ export const adminGetAllPosts = async (req, res, next) => {
   }
 };
 
-// GET /api/posts/admin/:id
 export const adminGetSinglePost = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -689,10 +655,7 @@ export const adminGetSinglePost = async (req, res, next) => {
       });
     }
 
-    const post = await Post.findById(id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role")
-      .populate("bids.lawyer", "name email phone role lawRegNumber");
+    const post = await populatePostQuery(Post.findById(id));
 
     if (!post) {
       return res.status(404).json({
@@ -711,7 +674,6 @@ export const adminGetSinglePost = async (req, res, next) => {
   }
 };
 
-// POST /api/posts/admin/create
 export const adminCreatePost = async (req, res, next) => {
   try {
     const {
@@ -773,9 +735,7 @@ export const adminCreatePost = async (req, res, next) => {
       acceptedBid: acceptedBid || null,
     });
 
-    const result = await Post.findById(post._id)
-      .populate("client", "name email phone role")
-      .populate("selectedLawyer", "name email phone role");
+    const result = await populatePostQuery(Post.findById(post._id));
 
     return res.status(201).json({
       success: true,
@@ -787,12 +747,10 @@ export const adminCreatePost = async (req, res, next) => {
   }
 };
 
-// PATCH /api/posts/admin/update/:id
 export const adminUpdatePost = async (req, res, next) => {
   return updatePost(req, res, next);
 };
 
-// DELETE /api/posts/admin/delete/:id
 export const adminDeletePost = async (req, res, next) => {
   return deletePost(req, res, next);
 };

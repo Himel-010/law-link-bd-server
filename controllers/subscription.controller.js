@@ -1,126 +1,13 @@
 import Subscription from "../models/subscription.model.js";
 import User from "../models/user.model.js";
+import Plan from "../models/plan.model.js";
 
-/**
- * =========================
- * HELPERS
- * =========================
- */
+const ALLOWED_PAYMENT_METHODS = ["bkash", "nogod"];
 
 const addDays = (date, days) => {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
   return result;
-};
-
-const PLAN_CONFIG = {
-  client: {
-    free: {
-      price: 0,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 2,
-        proposalLimit: 0,
-        shortlistLimit: 2,
-        proposalCredits: 0,
-        priorityAccess: false,
-        profileBoost: false,
-        unlimitedChat: false,
-        paidConsultationEnabled: false,
-        shortlistUnlockEnabled: false,
-      },
-    },
-    basic: {
-      price: 499,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 10,
-        proposalLimit: 0,
-        shortlistLimit: 10,
-        proposalCredits: 0,
-        priorityAccess: false,
-        profileBoost: false,
-        unlimitedChat: true,
-        paidConsultationEnabled: true,
-        shortlistUnlockEnabled: true,
-      },
-    },
-    premium: {
-      price: 999,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 9999,
-        proposalLimit: 0,
-        shortlistLimit: 9999,
-        proposalCredits: 0,
-        priorityAccess: true,
-        profileBoost: false,
-        unlimitedChat: true,
-        paidConsultationEnabled: true,
-        shortlistUnlockEnabled: true,
-      },
-    },
-  },
-
-  lawyer: {
-    free: {
-      price: 0,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 0,
-        proposalLimit: 5,
-        shortlistLimit: 0,
-        proposalCredits: 0,
-        priorityAccess: false,
-        profileBoost: false,
-        unlimitedChat: false,
-        paidConsultationEnabled: false,
-        shortlistUnlockEnabled: false,
-      },
-    },
-    basic: {
-      price: 999,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 0,
-        proposalLimit: 30,
-        shortlistLimit: 0,
-        proposalCredits: 10,
-        priorityAccess: false,
-        profileBoost: true,
-        unlimitedChat: true,
-        paidConsultationEnabled: true,
-        shortlistUnlockEnabled: false,
-      },
-    },
-    premium: {
-      price: 1999,
-      durationInDays: 30,
-      features: {
-        casePostLimit: 0,
-        proposalLimit: 9999,
-        shortlistLimit: 0,
-        proposalCredits: 50,
-        priorityAccess: true,
-        profileBoost: true,
-        unlimitedChat: true,
-        paidConsultationEnabled: true,
-        shortlistUnlockEnabled: false,
-      },
-    },
-  },
-};
-
-const ALLOWED_PAYMENT_METHODS = ["bkash", "nogod"];
-
-const getPlanDetails = (roleType, planName) => {
-  const normalizedRole = String(roleType || "").toLowerCase();
-  const normalizedPlan = String(planName || "").toLowerCase();
-
-  if (!PLAN_CONFIG[normalizedRole]) return null;
-  if (!PLAN_CONFIG[normalizedRole][normalizedPlan]) return null;
-
-  return PLAN_CONFIG[normalizedRole][normalizedPlan];
 };
 
 const getDefaultUsage = () => ({
@@ -192,10 +79,18 @@ const validatePaymentMethod = (method, price) => {
   return { valid: true, method: normalizedMethod };
 };
 
+const makePlanSnapshot = (plan) => ({
+  name: plan.name,
+  slug: plan.slug,
+  description: plan.description || "",
+  price: plan.price,
+  durationInDays: plan.durationInDays,
+  currency: plan.currency || "BDT",
+  features: plan.features || {},
+});
+
 /**
- * =========================
  * USER CONTROLLERS
- * =========================
  */
 
 export const createSubscription = async (req, res) => {
@@ -203,7 +98,7 @@ export const createSubscription = async (req, res) => {
     const userId = req.user?.id;
     const roleType = req.user?.role;
     const {
-      planName,
+      planId,
       transactionId = null,
       paymentMethod = null,
       notes = null,
@@ -223,10 +118,10 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    if (!planName) {
+    if (!planId) {
       return res.status(400).json({
         success: false,
-        message: "planName is required",
+        message: "planId is required",
       });
     }
 
@@ -238,11 +133,18 @@ export const createSubscription = async (req, res) => {
       });
     }
 
-    const plan = getPlanDetails(roleType, planName);
-    if (!plan) {
+    const plan = await Plan.findById(planId);
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: "Active plan not found",
+      });
+    }
+
+    if (plan.roleType !== roleType) {
       return res.status(400).json({
         success: false,
-        message: "Invalid plan for this role",
+        message: "This plan is not valid for your role",
       });
     }
 
@@ -268,8 +170,9 @@ export const createSubscription = async (req, res) => {
 
     const subscription = await Subscription.create({
       user: userId,
+      plan: plan._id,
       roleType,
-      planName: planName.toLowerCase(),
+      planSnapshot: makePlanSnapshot(plan),
       price: plan.price,
       durationInDays: plan.durationInDays,
       startDate: now,
@@ -297,7 +200,6 @@ export const createSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("createSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to create subscription",
@@ -310,9 +212,9 @@ export const getMySubscription = async (req, res) => {
   try {
     const userId = req.user?.id;
 
-    const subscription = await Subscription.findOne({ user: userId }).sort({
-      createdAt: -1,
-    });
+    const subscription = await Subscription.findOne({ user: userId })
+      .populate("plan")
+      .sort({ createdAt: -1 });
 
     if (!subscription) {
       return res.status(404).json({
@@ -326,7 +228,6 @@ export const getMySubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("getMySubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch subscription",
@@ -339,7 +240,11 @@ export const getMyActiveSubscription = async (req, res) => {
   try {
     const userId = req.user?.id;
 
-    const subscription = await getActiveSubscription(userId);
+    const subscription = await Subscription.findOne({
+      user: userId,
+      status: "active",
+      endDate: { $gt: new Date() },
+    }).populate("plan");
 
     if (!subscription) {
       return res.status(404).json({
@@ -353,7 +258,6 @@ export const getMyActiveSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("getMyActiveSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch active subscription",
@@ -366,9 +270,9 @@ export const getMySubscriptionHistory = async (req, res) => {
   try {
     const userId = req.user?.id;
 
-    const subscriptions = await Subscription.find({ user: userId }).sort({
-      createdAt: -1,
-    });
+    const subscriptions = await Subscription.find({ user: userId })
+      .populate("plan")
+      .sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
@@ -376,7 +280,6 @@ export const getMySubscriptionHistory = async (req, res) => {
       data: subscriptions,
     });
   } catch (error) {
-    console.error("getMySubscriptionHistory error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch subscription history",
@@ -387,7 +290,6 @@ export const getMySubscriptionHistory = async (req, res) => {
 
 export const renewSubscription = async (req, res) => {
   try {
-    const userId = req.user?.id;
     const {
       subscriptionId,
       transactionId = null,
@@ -402,7 +304,7 @@ export const renewSubscription = async (req, res) => {
       });
     }
 
-    const oldSubscription = await Subscription.findById(subscriptionId);
+    const oldSubscription = await Subscription.findById(subscriptionId).populate("plan");
 
     if (!oldSubscription) {
       return res.status(404).json({
@@ -418,10 +320,15 @@ export const renewSubscription = async (req, res) => {
       });
     }
 
-    const paymentValidation = validatePaymentMethod(
-      paymentMethod,
-      oldSubscription.price
-    );
+    const plan = await Plan.findById(oldSubscription.plan);
+    if (!plan || !plan.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Associated plan is not available anymore",
+      });
+    }
+
+    const paymentValidation = validatePaymentMethod(paymentMethod, plan.price);
     if (!paymentValidation.valid) {
       return res.status(400).json({
         success: false,
@@ -438,19 +345,20 @@ export const renewSubscription = async (req, res) => {
     }
 
     const now = new Date();
-    const endDate = addDays(now, oldSubscription.durationInDays);
-    const isFreePlan = oldSubscription.price === 0;
+    const endDate = addDays(now, plan.durationInDays);
+    const isFreePlan = plan.price === 0;
 
     const renewedSubscription = await Subscription.create({
       user: oldSubscription.user,
-      roleType: oldSubscription.roleType,
-      planName: oldSubscription.planName,
-      price: oldSubscription.price,
-      durationInDays: oldSubscription.durationInDays,
+      plan: plan._id,
+      roleType: plan.roleType,
+      planSnapshot: makePlanSnapshot(plan),
+      price: plan.price,
+      durationInDays: plan.durationInDays,
       startDate: now,
       endDate,
       status: isFreePlan ? "active" : "pending",
-      features: oldSubscription.features,
+      features: plan.features,
       usage: getDefaultUsage(),
       payment: {
         status: isFreePlan ? "paid" : "unpaid",
@@ -473,7 +381,6 @@ export const renewSubscription = async (req, res) => {
       data: renewedSubscription,
     });
   } catch (error) {
-    console.error("renewSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to renew subscription",
@@ -520,7 +427,6 @@ export const cancelSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("cancelSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to cancel subscription",
@@ -576,7 +482,7 @@ export const consumeSubscriptionFeature = async (req, res) => {
     const limit = subscription.features?.[limitField] ?? 0;
     const currentUsed = subscription.usage?.[featureKey] ?? 0;
 
-    if (limit !== 9999 && currentUsed + numericAmount > limit) {
+    if (limit !== 999999 && currentUsed + numericAmount > limit) {
       return res.status(400).json({
         success: false,
         message: `${limitField} exceeded`,
@@ -592,7 +498,6 @@ export const consumeSubscriptionFeature = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("consumeSubscriptionFeature error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to update usage",
@@ -624,7 +529,7 @@ export const checkSubscriptionFeatureAccess = async (req, res) => {
     switch (feature) {
       case "case-post":
         result.allowed =
-          subscription.features.casePostLimit === 9999 ||
+          subscription.features.casePostLimit === 999999 ||
           subscription.usage.casePostsUsed < subscription.features.casePostLimit;
         result.details = {
           limit: subscription.features.casePostLimit,
@@ -634,7 +539,7 @@ export const checkSubscriptionFeatureAccess = async (req, res) => {
 
       case "proposal":
         result.allowed =
-          subscription.features.proposalLimit === 9999 ||
+          subscription.features.proposalLimit === 999999 ||
           subscription.usage.proposalsUsed < subscription.features.proposalLimit;
         result.details = {
           limit: subscription.features.proposalLimit,
@@ -644,7 +549,7 @@ export const checkSubscriptionFeatureAccess = async (req, res) => {
 
       case "shortlist":
         result.allowed =
-          subscription.features.shortlistLimit === 9999 ||
+          subscription.features.shortlistLimit === 999999 ||
           subscription.usage.shortlistsUsed < subscription.features.shortlistLimit;
         result.details = {
           limit: subscription.features.shortlistLimit,
@@ -684,7 +589,6 @@ export const checkSubscriptionFeatureAccess = async (req, res) => {
       data: result,
     });
   } catch (error) {
-    console.error("checkSubscriptionFeatureAccess error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to check feature access",
@@ -694,9 +598,7 @@ export const checkSubscriptionFeatureAccess = async (req, res) => {
 };
 
 /**
- * =========================
  * ADMIN CONTROLLERS
- * =========================
  */
 
 export const adminCreateSubscription = async (req, res) => {
@@ -710,8 +612,7 @@ export const adminCreateSubscription = async (req, res) => {
 
     const {
       userId,
-      roleType,
-      planName,
+      planId,
       startDate,
       status,
       paymentStatus,
@@ -720,10 +621,10 @@ export const adminCreateSubscription = async (req, res) => {
       notes = null,
     } = req.body;
 
-    if (!userId || !roleType || !planName) {
+    if (!userId || !planId) {
       return res.status(400).json({
         success: false,
-        message: "userId, roleType and planName are required",
+        message: "userId and planId are required",
       });
     }
 
@@ -735,11 +636,18 @@ export const adminCreateSubscription = async (req, res) => {
       });
     }
 
-    const plan = getPlanDetails(roleType, planName);
+    const plan = await Plan.findById(planId);
     if (!plan) {
+      return res.status(404).json({
+        success: false,
+        message: "Plan not found",
+      });
+    }
+
+    if (plan.roleType !== user.role) {
       return res.status(400).json({
         success: false,
-        message: "Invalid plan for this role",
+        message: "Selected plan does not match user role",
       });
     }
 
@@ -767,8 +675,9 @@ export const adminCreateSubscription = async (req, res) => {
 
     const subscription = await Subscription.create({
       user: userId,
-      roleType,
-      planName: planName.toLowerCase(),
+      plan: plan._id,
+      roleType: user.role,
+      planSnapshot: makePlanSnapshot(plan),
       price: plan.price,
       durationInDays: plan.durationInDays,
       startDate: finalStartDate,
@@ -794,7 +703,6 @@ export const adminCreateSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("adminCreateSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to create subscription",
@@ -868,7 +776,6 @@ export const activateSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("activateSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to activate subscription",
@@ -889,7 +796,7 @@ export const getAllSubscriptions = async (req, res) => {
     const {
       status,
       roleType,
-      planName,
+      planId,
       userId,
       page = 1,
       limit = 10,
@@ -898,7 +805,7 @@ export const getAllSubscriptions = async (req, res) => {
     const filter = {};
     if (status) filter.status = status;
     if (roleType) filter.roleType = roleType;
-    if (planName) filter.planName = String(planName).toLowerCase();
+    if (planId) filter.plan = planId;
     if (userId) filter.user = userId;
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -906,6 +813,7 @@ export const getAllSubscriptions = async (req, res) => {
     const [subscriptions, total] = await Promise.all([
       Subscription.find(filter)
         .populate("user", "name email role phone subscriptionStatus")
+        .populate("plan", "name slug roleType price durationInDays isActive")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit)),
@@ -920,7 +828,6 @@ export const getAllSubscriptions = async (req, res) => {
       data: subscriptions,
     });
   } catch (error) {
-    console.error("getAllSubscriptions error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch subscriptions",
@@ -940,10 +847,9 @@ export const getSubscriptionById = async (req, res) => {
 
     const { subscriptionId } = req.params;
 
-    const subscription = await Subscription.findById(subscriptionId).populate(
-      "user",
-      "name email role phone subscriptionStatus currentSubscription"
-    );
+    const subscription = await Subscription.findById(subscriptionId)
+      .populate("user", "name email role phone subscriptionStatus currentSubscription")
+      .populate("plan", "name slug roleType price durationInDays isActive features");
 
     if (!subscription) {
       return res.status(404).json({
@@ -957,7 +863,6 @@ export const getSubscriptionById = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("getSubscriptionById error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch subscription details",
@@ -976,17 +881,7 @@ export const adminUpdateSubscription = async (req, res) => {
     }
 
     const { subscriptionId } = req.params;
-    const {
-      planName,
-      roleType,
-      status,
-      startDate,
-      endDate,
-      notes,
-      features,
-      usage,
-      payment,
-    } = req.body;
+    const { status, startDate, endDate, notes, features, usage, payment } = req.body;
 
     const subscription = await Subscription.findById(subscriptionId);
 
@@ -997,49 +892,21 @@ export const adminUpdateSubscription = async (req, res) => {
       });
     }
 
-    if (planName || roleType) {
-      const finalRole = roleType || subscription.roleType;
-      const finalPlan = planName || subscription.planName;
+    if (startDate) subscription.startDate = new Date(startDate);
+    if (endDate) subscription.endDate = new Date(endDate);
 
-      const plan = getPlanDetails(finalRole, finalPlan);
-      if (!plan) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid roleType/planName combination",
-        });
-      }
+    if (features) {
+      subscription.features = {
+        ...subscription.features.toObject(),
+        ...features,
+      };
+    }
 
-      subscription.roleType = finalRole;
-      subscription.planName = finalPlan.toLowerCase();
-      subscription.price = plan.price;
-      subscription.durationInDays = plan.durationInDays;
-      subscription.features = plan.features;
-
-      const finalStartDate = startDate
-        ? new Date(startDate)
-        : subscription.startDate || new Date();
-
-      subscription.startDate = finalStartDate;
-      subscription.endDate = endDate
-        ? new Date(endDate)
-        : addDays(finalStartDate, plan.durationInDays);
-    } else {
-      if (startDate) subscription.startDate = new Date(startDate);
-      if (endDate) subscription.endDate = new Date(endDate);
-
-      if (features) {
-        subscription.features = {
-          ...subscription.features.toObject(),
-          ...features,
-        };
-      }
-
-      if (usage) {
-        subscription.usage = {
-          ...subscription.usage.toObject(),
-          ...usage,
-        };
-      }
+    if (usage) {
+      subscription.usage = {
+        ...subscription.usage.toObject(),
+        ...usage,
+      };
     }
 
     if (status) {
@@ -1098,7 +965,6 @@ export const adminUpdateSubscription = async (req, res) => {
       data: subscription,
     });
   } catch (error) {
-    console.error("adminUpdateSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to update subscription",
@@ -1137,7 +1003,6 @@ export const adminDeleteSubscription = async (req, res) => {
       message: "Subscription deleted successfully",
     });
   } catch (error) {
-    console.error("adminDeleteSubscription error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to delete subscription",
@@ -1173,7 +1038,6 @@ export const checkAndExpireSubscriptions = async (req, res) => {
       updatedCount: expiredSubscriptions.length,
     });
   } catch (error) {
-    console.error("checkAndExpireSubscriptions error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to check expired subscriptions",
@@ -1184,13 +1048,24 @@ export const checkAndExpireSubscriptions = async (req, res) => {
 
 export const getSubscriptionPlans = async (req, res) => {
   try {
+    const { roleType } = req.query;
+
+    const filter = { isActive: true };
+    if (roleType) filter.roleType = roleType;
+
+    const plans = await Plan.find(filter).sort({
+      roleType: 1,
+      sortOrder: 1,
+      price: 1,
+      createdAt: -1,
+    });
+
     return res.status(200).json({
       success: true,
       paymentMethods: ALLOWED_PAYMENT_METHODS,
-      data: PLAN_CONFIG,
+      data: plans,
     });
   } catch (error) {
-    console.error("getSubscriptionPlans error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch plans",

@@ -24,7 +24,7 @@ const router = express.Router();
 
 /*
 |--------------------------------------------------------------------------
-| Special Routes First
+| Special Client Routes
 |--------------------------------------------------------------------------
 */
 router.get("/client/my-posts", protect, authorizeRoles("client"), getMyPosts);

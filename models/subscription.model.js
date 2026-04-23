@@ -97,11 +97,59 @@ const paymentSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const planSnapshotSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    slug: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+    },
+    description: {
+      type: String,
+      default: "",
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    durationInDays: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    currency: {
+      type: String,
+      default: "BDT",
+      uppercase: true,
+    },
+    features: {
+      type: featureSchema,
+      required: true,
+      default: () => ({}),
+    },
+  },
+  { _id: false }
+);
+
 const subscriptionSchema = new mongoose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      required: true,
+      index: true,
+    },
+
+    plan: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Plan",
       required: true,
       index: true,
     },
@@ -113,13 +161,9 @@ const subscriptionSchema = new mongoose.Schema(
       index: true,
     },
 
-    planName: {
-      type: String,
-      enum: ["free", "basic", "premium"],
+    planSnapshot: {
+      type: planSnapshotSchema,
       required: true,
-      trim: true,
-      lowercase: true,
-      index: true,
     },
 
     price: {

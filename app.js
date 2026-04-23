@@ -3,7 +3,9 @@ import cors from "cors";
 
 import userRoutes from "./routes/user.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
+import paymentRoutes from "./routes/payment.routes.js";
 import postRoutes from "./routes/post.route.js";
+import planRoutes from "./routes/plan.route.js";
 
 const app = express();
 
@@ -26,7 +28,9 @@ app.get("/", (req, res) => {
 // routes
 app.use("/api/users", userRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/payments", paymentRoutes);
 app.use("/api/posts", postRoutes);
+app.use("/api/plans", planRoutes);
 
 // not found route handler
 app.use((req, res) => {
